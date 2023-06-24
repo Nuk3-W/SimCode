@@ -4,7 +4,8 @@
 #include "sim_cache.h"
 #include "sim.cpp"
 
-string SetZero (string);
+using namespace std;
+
 /*  argc holds the number of command line arguments
     argv[] holds the commands themselves
 
@@ -58,26 +59,48 @@ int main (int argc, char* argv[])
             "  L2_ASSOC:                         %lu\n"
             "  trace_file:                       %s\n"
             "  ===================================\n\n", params.block_size, params.l1_size, params.l1_assoc, params.vc_num_blocks, params.l2_size, params.l2_assoc, trace_file);
-    Cache L2 = Cache(params.l1_size, params.l1_assoc, params.block_size, NULL);
-    Cache L1 = Cache(params.l2_size, params.l2_assoc, params.block_size, &L2); 
+    Cache L2 = Cache(NULL, "L2", params.l2_size, params.l2_assoc, params.block_size, NULL);
+    Cache L1 = Cache(NULL, "L1", params.l1_size, params.l1_assoc, params.block_size, &L2);
+    //Victim VL1 = Victim(&L1, params.vc_num_blocks, "VL1", (params.vc_num_blocks*params.block_size), params.vc_num_blocks, params.block_size, NULL);
+    //Cache* ptr  = &VL1;
+    //L1.Assign(ptr);
     char str[2];
+    
     while(fscanf(FP, "%s %lx", str, &addr) != EOF)
     { 
         
         rw = str[0];
         if (rw == 'r')
         {   
+            //cout << VL1.VirtualMemory[0][15] << endl;
+            //cout << addr << endl;
             L1.Read(DecToBinary(addr)); 
-            printf("%s %lx\n", "read", addr);           // Print and test if file is read correctly
+            //printf("%s %lx\n", "read", addr);           // Print and test if file is read correctly
+            //cout << L2.Reads << endl;
         }
         else if (rw == 'w')
         {   
+            //cout << addr << endl;
+            //cout << VL1.VirtualMemory[0][15] << endl;
             L1.Write(DecToBinary(addr)); 
-            printf("%s %lx\n", "write", addr);          // Print and test if file is read correctly
+            //printf("%s %lx\n", "write", addr);          // Print and test if file is read correctly
+            //cout << L2.Reads << endl;
         }
         /*************************************
                   Add cache code here
         **************************************/
     }
+    //cout << "Total Miss L1 " << L1.Misses << endl << "Total Hits L1 " << L1.Hits << endl;
+    cout << "Total Read L1 " << L1.Reads << endl << "Total Reads Misses L1 " << L1.ReadMiss << endl;
+    cout << "Total Writes L1 " <<  L1.Writes << endl << "Total Write Misses L1 " << L1.WriteMiss << endl;
+    //cout << "Total Swap Requests " << VL1.Reads << endl <<  "Total Swap " << VL1.SwapRequests << endl;
+    //cout << "L1 Miss Rate " << ((float)(L1.Misses - VL1.SwapRequests)/100000) << endl; 
+    //cout << "L1 WriteBacks " << L1.WriteBacks + VL1.WriteBacks << endl;
+    cout << "L2 Reads " << L2.Reads << endl << "Total Read Misses L2 " << L2.ReadMiss << endl;
+    cout << "L2 Writes " << L2.Writes << endl << "Total Write Misses L2 " << L2.WriteMiss << endl;
+    cout << "L2 Miss Rate " << ((float)L2.Misses/(L2.Reads)) << endl;
+    cout << "L2 WriteBacks " << L2.WriteBacks << endl;
+    cout << L1.SwapHitCounter;
+ 
     return 1;
 }

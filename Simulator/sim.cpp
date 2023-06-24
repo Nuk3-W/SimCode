@@ -9,12 +9,16 @@ using namespace std;
 
 int BinaryToDecimal(int);
 string HexToBin(string);
-string DecToBinary(int);
+string DecToBinary(int);   
 
 class Cache
 {
 public:
-    Cache * LowerLevel;
+    Cache* LowerLevel;
+    Cache* VCPtr = NULL;
+    Cache* Connection = NULL;
+    string Name;
+    int SwapHitCounter = 0;
     int Size; // In bytes
     int Type; // This is ow many ways are in each set Type 1 = Direct Mapping everything else is set associative and associative mapping
     int BlockSize; //Number of Bytes per block
@@ -24,15 +28,26 @@ public:
     int TagBits; //amount of bits allocated for the tag after block is written in the cache
     int ExtraBits; 
     int LRUCounterBits;
+    int BlockOffsetBits;
     int Hits = 0;
     int Misses = 0;
+    int WriteMiss = 0;
+    int ReadMiss = 0;
+    int Reads = 0;
+    int Writes = 0;
+    int WriteBacks = 0;
+    int SwapRequests = 0;
+    string* WriteBackAddress; //to properly do a write back, the old address of the eviction block is needed not the current therefore we use this pointer to reconstrcut it
     int* TrueWay = new int; //after the tag address is matched with a way, the true way holds the value so we can access that specific way
     string* TagPoint = new string; //pointer for storing only the current tag of the current read/write address
     int* SetOffsetPoint = new int; //pointer for storing the current Set Offset of the address from the read/write address
     vector<vector<string>> VirtualMemory;
     vector<vector<string>> TagMemory; //tag memory to confirm block identity
-    Cache (int size, int type, int blocksize, Cache * lowerlevel) // cache class constructor
+    Cache (Cache* connection, string name, int size, int type, int blocksize, Cache * lowerlevel) // cache class constructor
     {   
+        Name = name;
+        if (Name[0] = 'V')
+            Connection = connection;
         LowerLevel = lowerlevel;
         Size = size; 
         Type = type;
@@ -42,7 +57,8 @@ public:
         ExtraBits = ceil((log2(Type)+2)); //ExtraBits is the bits needed for LRUCounter, DirtyBit, and ValidBit
         LRUCounterBits = ceil(log2(Type)); 
         LSBForSetIndex = ceil(log2(Sets));
-        TagBits = (32 - LSBForSetIndex);
+        BlockOffsetBits = ceil(log2(BlockSize));
+        TagBits = (32 - LSBForSetIndex - BlockOffsetBits); 
         Initialize();
     };
     void Initialize () //creates the array that models the cache along with the tag array that confirms its location
@@ -54,7 +70,14 @@ public:
             VirtualMemory[i].resize(n); //second layer is the way
             for (int j = 0; j < n; j++)
             {
-                VirtualMemory[i][j].resize((ExtraBits), '0'); //this makes a string of every bit based on the blocksize and the extra bits needed for the counter, valid bit, and dirt bit
+                VirtualMemory[i][j] = "00";
+                string temp = DecToBinary(j); 
+                while (temp.length() != LRUCounterBits)
+                {
+                    temp = '0' + temp;
+                }
+                VirtualMemory[i][j] = VirtualMemory[i][j] + temp;
+                //cout << VirtualMemory[i][j] << endl;
             };
         };
         TagMemory.resize(m); //first layer of tag memory is set
@@ -63,56 +86,96 @@ public:
             TagMemory[i].resize(n); //second layer is the amount of ways
             for (int j = 0; j < n; j++)
             {
-                TagMemory[i][j].resize(TagBits, '0'); //this makes a string as a placeholder for the tag 
+                TagMemory[i][j].resize(TagBits, '0'); //this makes a string as a placeholder for the tag
+                //cout << TagMemory[i][j] << endl;
             };
         };
+        //cout << TagMemory[0][0] << "Check" << endl;
     };
-    string Read (string bincurrentaddress)
+    void Assign (Cache* ptr)
+    {
+        VCPtr = ptr;
+    }
+    virtual bool Read (string bincurrentaddress)
     {   
+        while (bincurrentaddress.length() != 32)
+        {
+            bincurrentaddress.insert(0, 1,'0');
+        }
         AddressDecoder(bincurrentaddress);
+        /*for (int i = 0; i < VirtualMemory[*SetOffsetPoint].size(); i++) 
+        {
+            cout << TagMemory[*SetOffsetPoint][i] << endl;
+        }*/
         bool ValidTag = TagChecker(); //false if no tag matches the address tag, true otherwise
-        bool ValidBit = BlockValidityChecker(bincurrentaddress);
-        bool ValidDirty = DirtyBitChecker();
+        bool ValidBit = BlockValidityChecker(*TrueWay);
+        bool ValidDirty = DirtyBitChecker(*TrueWay);
         if (ValidBit == true && ValidTag == true)
         {
                 Hits ++; //= data; since I'm only doing blocks with no data IM not implementing the data rn
+                Reads ++;
                 LRUCounter();
-                return *TagPoint;
         }
         else
         {   //this is the read miss
             int LRUWay = LRUChecker(); 
             Misses ++;
+            ReadMiss ++;
+            Reads ++;
+            ValidDirty = DirtyBitChecker(LRUWay);
+            *TrueWay = LRUWay;
             Allocate(LRUWay, ValidDirty, bincurrentaddress);
-            return *TagPoint;
+            LRUCounter();
+            VirtualMemory[*SetOffsetPoint][LRUWay][1] = '1';
+            VirtualMemory[*SetOffsetPoint][LRUWay][0] = '0';
         }
+        return false; 
     };//for data I would add a string parameter and set the VirtualMemory equal to that at the correct block
-    void Write (string bincurrentaddress) //NOT FINISHED BECAUSE READ FUNCTION NEEDED TO FINISH A WRITE MISS SINCE WE NEED TO READ FROM NEXT LEVEL OF MEMORY
+    virtual int Write (string bincurrentaddress) //NOT FINISHED BECAUSE READ FUNCTION NEEDED TO FINISH A WRITE MISS SINCE WE NEED TO READ FROM NEXT LEVEL OF MEMORY
     {   
+        while (bincurrentaddress.length() != 32)
+        {
+            bincurrentaddress.insert(0, 1,'0');
+        }
         AddressDecoder(bincurrentaddress); //Obtains the decimal Line/Set value of the block as an integer and the Tag Value in binary as a string since the string is the main comparison for a block
+        /*for (int i = 0; i < VirtualMemory[*SetOffsetPoint].size(); i++) 
+        {
+            cout << TagMemory[*SetOffsetPoint][i] << endl;
+        } */
         bool ValidTag = TagChecker(); //false if no tag matches the address, tag is true otherwise
-        bool ValidBit = BlockValidityChecker(bincurrentaddress); 
-        bool ValidDirty = DirtyBitChecker();
+        bool ValidBit = BlockValidityChecker(*TrueWay); 
+        bool ValidDirty = DirtyBitChecker(*TrueWay);
         if (ValidBit == true && ValidTag == true)
         {
-                Hits ++; //= data; since I'm only doing blocks with no data IM not implementing the data rn
-                LRUCounter();
+            Hits ++; //= data; since I'm only doing blocks with no data IM not implementing the data rn
+            Writes ++;
+            VirtualMemory[*SetOffsetPoint][*TrueWay][0] = '1'; //sets dirty bit to 
+            LRUCounter();
+            return 0;
         }
         else
         {
-            int temp = LRUChecker();
-            Misses ++; 
-            Allocate(temp, ValidDirty, bincurrentaddress); //NOT IMPLEMENTED YET 
+            int LRUWay = LRUChecker();
+            Misses ++;
+            WriteMiss ++;
+            Writes ++;
+            ValidDirty = DirtyBitChecker(LRUWay);
+            *TrueWay = LRUWay;
+            Allocate(LRUWay, ValidDirty, bincurrentaddress); //NOT IMPLEMENTED YET
+            LRUCounter();
+            VirtualMemory[*SetOffsetPoint][LRUWay][1] = '1'; //sets valid bit to true
+            VirtualMemory[*SetOffsetPoint][LRUWay][0] = '1'; //sets dirty bit to true
+            return 1; 
         }
     };
-    bool BlockValidityChecker (string bincurrentaddress) //valid bit needs to be checked which indicates if next action is a miss or hit
+    bool BlockValidityChecker (int Way) //valid bit needs to be checked which indicates if next action is a miss or hit
     {
-        if (VirtualMemory[*SetOffsetPoint][*TrueWay].substr(1) == "1") //if valid bit = 1 then true, otherwise false
+        if (VirtualMemory[*SetOffsetPoint][Way][1] == '1') //if valid bit = 1 then true, otherwise false
         {
             return true;
         } 
         else
-        {
+        {   
             return false;
         }
     };
@@ -121,32 +184,43 @@ public:
         int SetOffset = 0;
         string BinTag;
         string BinSet;
-
+        //cout << bincurrentAddress << " ";
         *TagPoint = bincurrentAddress.substr(0, (TagBits));
+        //cout << *TagPoint << " ";
         bincurrentAddress.erase(0, (TagBits));
-        BinSet = bincurrentAddress.substr(0, (LSBForSetIndex));
+        BinSet = bincurrentAddress.substr(0, (LSBForSetIndex)); //possible issue if LSBFORSETINDEx is = 0
+        //cout << BinSet << " ";
         bincurrentAddress.erase(0, (LSBForSetIndex));
-
+        if (LSBForSetIndex != 0)
+        {
         SetOffset = stoi(BinSet);
 
         *SetOffsetPoint = BinaryToDecimal(SetOffset);
+        }
+        else 
+        *SetOffsetPoint = 0;
+        //cout << *SetOffsetPoint << " ";
     }
     bool TagChecker ()
     {
+        *TrueWay = 0;
         for (int i = 0; i < TagMemory[*SetOffsetPoint].size(); i++) //checks tag
         {   
+            //cout << TagMemory[*SetOffsetPoint][i] << endl;
+            //cout << i << " " << *TagPoint << " "<< TagMemory[*SetOffsetPoint][i] << endl;
             if (*TagPoint == TagMemory[*SetOffsetPoint][i])
             {
                 *TrueWay = i;
+                //cout << i << " " << *TrueWay << endl;
                 return true;
             }
         };
-        *TrueWay = 0;
+        //cout << TagMemory[*SetOffsetPoint][*TrueWay] << endl;
         return false;
     }
-    bool DirtyBitChecker()
+    bool DirtyBitChecker(int way)
     {
-                if (VirtualMemory[*SetOffsetPoint][*TrueWay].substr(0) == "1") //if dirty bit = 1 then true, otherwise false (almost the same as valid checker)
+                if (VirtualMemory[*SetOffsetPoint][way][0] == '1') //if dirty bit = 1 then true, otherwise false (almost the same as valid checker)
         {
             return true;
         } 
@@ -155,28 +229,55 @@ public:
             return false;
         }
     }
-    void Allocate(int Temp, bool Dbit, string bincurrentaddress) //having the binary address as a parameter even after its decoded is so it can get redecoded
+    bool VCCase(string bincurrentaddress)
+    {
+        bool VCAccess = true;
+        int VCHit = false;
+        bool ValidDirty = false;
+        for (int i = 0; i < Type; i++)
+        {
+            bool SetValidCheck = BlockValidityChecker(i);
+            if (SetValidCheck == false)
+            {   
+                VCAccess = false;
+                break;
+            }
+        };
+        if (VCAccess == true)
+        {   
+            VCHit = VCPtr->Read(bincurrentaddress); //will call a swap if there's a hit in the victim cache
+            if (VCHit = true)
+            {
+                SwapHitCounter ++;
+                return true;
+            }
+        }
+        return false;
+        //LowerLevel->Read(bincurrentaddress); add back 
+        /*int temp = VCPtr->LRUChecker();
+        ValidDirty = VCPtr->DirtyBitChecker(temp); 
+        VCPtr->Allocate(temp, ValidDirty, bincurrentaddress);*/
+    };
+    virtual void Allocate(int Temp, bool Dbit, string bincurrentaddress) //having the binary address as a parameter even after its decoded is so it can get redecoded
     //in the next write request to the next cache
     {   
-        string ReadTag;
-        if (LowerLevel != NULL) //if this doesnt have a lower level to write to, it's assumed that it will hit since it's main memory
-            {
-                if (Dbit == true) //this is the dirty bit 
-                {
-                    WriteBack(Temp, bincurrentaddress);
-                    Dbit = false;
-                }
-                else
-                {
-                    LowerLevel->Read(bincurrentaddress);
-                    TagMemory[*SetOffsetPoint][Temp] = *TagPoint; 
-                }
-            }
-            else 
-            {   
-                TagMemory[*SetOffsetPoint][Temp] = *TagPoint;
-            }
-           /* if (Dbit == true) //this is the dirty bit 
+        bool SwapHit = false;
+        if (VCPtr != NULL) 
+            SwapHit = VCCase(bincurrentaddress);
+            //cout <<SwapHit << endl;
+        if (Dbit == true && VCPtr == NULL) //this is the dirty bit     
+        {
+            WriteBack(Temp, bincurrentaddress);
+            WriteBacks ++;
+            //TagMemory[*SetOffsetPoint][Temp] = *TagPoint; //TODO REMOVE IF ERROR;
+        }
+        if (LowerLevel != NULL)
+            LowerLevel->Read(bincurrentaddress);
+        //cout << TagMemory[*SetOffsetPoint][Temp] << endl;
+        TagMemory[*SetOffsetPoint][Temp] = *TagPoint; //TODO POssibly need to update this so the correct tag gets placed
+        //cout << TagMemory[*SetOffsetPoint][Temp] << endl;
+
+        /* if (Dbit == true) //this is the dirty bit 
             {
                 WriteBack(Temp, bincurrentaddress);
                 Dbit = false;
@@ -186,51 +287,213 @@ public:
                 TagMemory[*SetOffsetPoint][*TrueWay] = LowerLevel->Read(bincurrentaddress);
             }*/
     };
-    void WriteBack (int temp, string bincurrentaddress)
+    virtual void WriteBack (int LRUWay, string bincurrentaddress)
     {       
-        if (LowerLevel != NULL)
-        {
-            LowerLevel->Write(bincurrentaddress);
-        }
+            string temp = DecToBinary(*SetOffsetPoint);
+            while (temp.length() != LSBForSetIndex)
+            {
+                temp.insert(0, 1, '0');
+            };
+            string WriteBackAddress = TagMemory[*SetOffsetPoint][LRUWay] + temp; 
+            //cout << WriteBackAddress << " " <<TagMemory[*SetOffsetPoint][LRUWay] << " " << temp;
+            while (WriteBackAddress.length() != 32)
+            {
+                WriteBackAddress += '0';
+            };
+            //cout << WriteBackAddress << " ";
+            if (LowerLevel != NULL)
+                LowerLevel->Write(WriteBackAddress); //TODO Havent checked if this works at all 
     };  
     int LRUChecker () //might rename. This checks which way was least used for the write/read allocation
-    {
+    {   
+
         int max = 0; //I dont think the counter will need more digit than this 
         int Way = 0;
-        for (int i = 0; i < VirtualMemory[*SetOffsetPoint].size(); i++) //this is to check the LRUCounter of each block in the set to see which one should be evicted
-        {   
-            int temp = stoi(VirtualMemory[*SetOffsetPoint][i].substr(2, LRUCounterBits));
-            if (temp > max)
+            if (Type != 1)
             {
-                max = temp;
-                Way = i;
+                for (int i = 0; i < VirtualMemory[*SetOffsetPoint].size(); i++)
+                {   
+                    //cout << VirtualMemory[*SetOffsetPoint][i] << endl;
+                    int temp = BinaryToDecimal(stoi(VirtualMemory[*SetOffsetPoint][i].substr(2, LRUCounterBits)));
+                    //cout << temp << endl; 
+                    if (temp > max)
+                    {
+                        max = temp;
+                        Way = i;
+                    }
+                }
             }
-        }
+            /*for (int i = 0; i < Type; i++)
+            cout << VirtualMemory[*SetOffsetPoint][i] << " ";
+            cout << "check" << endl; */
         return Way;
     };
     void LRUCounter () 
-    {
-        for ( int i = 0; i < Type; i++)
+    {   
+        if (Type != 1)
         {   
-            int temp = stoi(VirtualMemory[*SetOffsetPoint][i].substr(2, LRUCounterBits));
-            temp = BinaryToDecimal(temp);
-            temp ++;
-            string str = DecToBinary(temp);
-            VirtualMemory[*SetOffsetPoint][i].substr(2, LRUCounterBits) = str;
+            /*for (int i = 0; i < Type; i++)
+            cout << VirtualMemory[*SetOffsetPoint][i] << " ";
+            cout << "Count" << endl; */
+            string MostRecent = VirtualMemory[*SetOffsetPoint][*TrueWay];
+            string Zeros;
+            for (int i = 0; i < LRUCounterBits; i++)
+            {
+                Zeros += "0";
+            };
+            VirtualMemory[*SetOffsetPoint][*TrueWay].replace(2, LRUCounterBits, Zeros);
+            for (int i = 0; i < Type; i++)
+            {   
+                //cout << VirtualMemory[*SetOffsetPoint][i].substr(2, LRUCounterBits) << endl;
+                int temp = stoi(VirtualMemory[*SetOffsetPoint][i].substr(2, LRUCounterBits));
+                if(temp < stoi(MostRecent.substr(2,LRUCounterBits)) && i != *TrueWay)
+                {
+                    temp = BinaryToDecimal(temp);
+                    temp ++;
+                    string str = DecToBinary(temp);
+                    if (str.length() != LRUCounterBits)
+                    {
+                        str = '0' + str;
+                    }
+                    VirtualMemory[*SetOffsetPoint][i].replace(2, LRUCounterBits, str);
+                }  
+            }
+            /*for (int i = 0; i < Type; i++)
+            cout << VirtualMemory[*SetOffsetPoint][i] << " ";
+            cout << "Count" << endl; */
+            /*for ( int i = 0; i < Type; i++)
+            {   
+                int temp = stoi(VirtualMemory[*SetOffsetPoint][i].substr(2, LRUCounterBits));
+                temp = BinaryToDecimal(temp);
+                temp ++;
+                string str = DecToBinary(temp);
+                while (str.length() != LRUCounterBits)
+                {
+                    str = '0' + str;
+                };
+                VirtualMemory[*SetOffsetPoint][i].replace(2, LRUCounterBits, str);
+                //cout << VirtualMemory[*SetOffsetPoint][i] << endl; */
         }
-        string MostRecent;
-        for (int i = 0; i < LRUCounterBits; i++)
+    };
+    void Swap()
+    {   
+        SwapRequests ++;
+        //cout << "Swap Hit" << endl;
+        int ConnectionTagBits = Connection->TagBits;
+        int* ConnectionSet = Connection->SetOffsetPoint; 
+        int* ConnectionWay = Connection->TrueWay;
+        string TagTempC; //Victim Cache 
+        string MemTempC; //Victim Cache
+        string MemTempP; //main cache
+        string TagTempP; //maincache
+        string TagAdder = DecToBinary(*ConnectionSet); //used to add extra bits to the tag since main cache will have less tag bits than victim
+        while (TagAdder.length() != Connection->LSBForSetIndex)
+            TagAdder = '0' + TagAdder;
+        TagTempC = Connection->TagMemory[*ConnectionSet][*ConnectionWay];
+        TagTempC += TagAdder;
+        MemTempC = Connection->VirtualMemory[*ConnectionSet][*ConnectionWay].substr(0, 2); 
+        MemTempP = VirtualMemory[*SetOffsetPoint][*TrueWay].substr(0, 2);
+        TagTempP = TagMemory[*SetOffsetPoint][*TrueWay];
+        TagTempP.erase(ConnectionTagBits, TagTempP.length()); //delets extra charachters from tag because victim cache is fully associative and thus has a longer tag
+        VirtualMemory[0][*TrueWay].replace(0, 1, MemTempC);
+        TagMemory[0][*TrueWay] = TagTempC;
+        Connection->VirtualMemory[*ConnectionSet][*ConnectionWay].replace(0, 2 , MemTempP);
+        Connection->TagMemory[*ConnectionSet][*ConnectionWay] = TagTempP; //TODO Have not checked if this will work at all
+    };
+};
+class Victim : public Cache
+{
+public: 
+    Victim(Cache * connection, int blocks, string name, int size, int type, int blocksize, Cache * lowerlevel):Cache(connection, name, size, type, blocksize, lowerlevel)
+    {
+        Blocks = blocks;
+        Type = Blocks;
+        BlockSize = Connection->BlockSize;
+    };
+    virtual bool Read (string bincurrentaddress)
+    {   
+        while (bincurrentaddress.length() != 32)
         {
-            MostRecent += "0";
-        };
-        VirtualMemory[*SetOffsetPoint][*TrueWay].substr(2, LRUCounterBits) = MostRecent;
-
-    
-
-
-
+            bincurrentaddress.insert(0, 1,'0');
+        }
+        AddressDecoder(bincurrentaddress);
+        bool ValidTag = TagChecker(); //false if no tag matches the address tag, true otherwise
+        bool ValidBit = BlockValidityChecker(*TrueWay);
+        bool ValidDirty = DirtyBitChecker(*TrueWay);
+        if (ValidBit == true && ValidTag == true)
+        {
+                Hits ++; //= data; since I'm only doing blocks with no data IM not implementing the data rn
+                Reads ++;
+                Swap();
+                LRUCounter();
+                return true;
+        }
+        else
+        {   //this is the read miss
+            int LRUWay = LRUChecker(); 
+            Misses ++;
+            ReadMiss ++;
+            Reads ++;
+            ValidDirty = DirtyBitChecker(LRUWay);
+            *TrueWay = LRUWay;
+            Allocate(LRUWay, ValidDirty, bincurrentaddress);
+            LRUCounter();
+            return false;
+        }
+    };
+    int Write (string bincurrentaddress) //NOT FINISHED BECAUSE READ FUNCTION NEEDED TO FINISH A WRITE MISS SINCE WE NEED TO READ FROM NEXT LEVEL OF MEMORY
+    {   
+        while (bincurrentaddress.length() != 32)
+        {
+            bincurrentaddress.insert(0, 1,'0');
+        }
+        AddressDecoder(bincurrentaddress); //Obtains the decimal Line/Set value of the block as an integer and the Tag Value in binary as a string since the string is the main comparison for a block
+        bool ValidTag = TagChecker(); //false if no tag matches the address, tag is true otherwise
+        bool ValidBit = BlockValidityChecker(*TrueWay); 
+        bool ValidDirty = DirtyBitChecker(*TrueWay);
+        int LRUWay = LRUChecker();
+        Misses ++;
+        WriteMiss ++;
+        Writes ++;
+        ValidDirty = DirtyBitChecker(LRUWay);
+        *TrueWay = LRUWay;
+        Allocate(LRUWay, ValidDirty, bincurrentaddress); //NOT IMPLEMENTED YET
+        LRUCounter();
+        VirtualMemory[*SetOffsetPoint][LRUWay][1] = '1'; //sets valid bit to true
+        VirtualMemory[*SetOffsetPoint][LRUWay][0] = '1'; //sets dirty bit to true
+        return 0; 
+    };
+    void Allocate(int Temp, bool Dbit, string bincurrentaddress)
+    {   
+        if (Dbit == true)
+            WriteBack(Temp, bincurrentaddress); 
+        int ConnectionTagBits = Connection->TagBits;
+        int* ConnectionSet = Connection->SetOffsetPoint;
+        int* ConnectionWay = Connection->TrueWay;
+        string TagTempC; //Victim Cache 
+        string MemTempC; //Victim Cache
+        string TagAdder = DecToBinary(*ConnectionSet);
+            while (TagAdder.length() != Connection->LSBForSetIndex)
+        TagAdder = '0' + TagAdder;
+        TagTempC = Connection->TagMemory[*ConnectionSet][*ConnectionWay];
+        TagTempC += TagAdder;
+        MemTempC = Connection->VirtualMemory[*ConnectionSet][*ConnectionWay].substr(0,2); 
+        TagMemory[0][Temp] = TagTempC;
+        VirtualMemory[0][Temp].replace(0, 2, MemTempC); 
+        return;
     }
-    
+    void WriteBack (int LRUWay, string bincurrentaddress)
+    {       
+            string WriteBackAddress = TagMemory[*SetOffsetPoint][LRUWay];
+            //cout << WriteBackAddress << " " <<TagMemory[*SetOffsetPoint][LRUWay] << " " << temp;
+            while (WriteBackAddress.length() != 32)
+            {
+                WriteBackAddress += '0';
+            };
+            //cout << WriteBackAddress << " ";
+            WriteBacks ++;
+            Connection->LowerLevel->Write(WriteBackAddress); //TODO Havent checked if this works at all 
+    };  
 };
 
 
@@ -328,16 +591,20 @@ int BinaryToDecimal(int n)
 //this is just taken from stack overflow
 // function to convert decimal to binary
 string DecToBinary(int num)
-{
+{   
+    int count = 0;
+    //cout << num << " ";
     string str;
-      while(num){
+      while(num && count < 32){
       if(num & 1) // 1
-        str+='1';
+        str = '1' + str;
       else // 0
-        str+='0';
+        str = '0' + str;
       num>>=1; // Right Shift by 1 
+      count ++;
     } 
+    //cout << str << endl;
+    
     return str;
 }
-//this is from geeks for geeks
-
+//this is from geeks for geeks //This thing was backwards but fixed
