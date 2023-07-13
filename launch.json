@@ -6,7 +6,7 @@
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/sim_cache.exe",
-            "args": ["16", "1024", "1", "16", "8192", "4", "gcc_trace.txt"],
+            "args": ["16", "1024", "2", "16", "8192", "4", "gcc_trace.txt"],
             "cwd": "${workspaceFolder}",
         }
     ]
