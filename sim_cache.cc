@@ -64,10 +64,12 @@ int main (int argc, char* argv[])
     Victim VL1 = Victim(&L1, params.vc_num_blocks, "VL1", (params.vc_num_blocks*params.block_size), params.vc_num_blocks, params.block_size, NULL);
     PrefetchBuffer PF1 = PrefetchBuffer(&L1, "PrefetchBuffer", 16, 16, params.block_size, NULL); //prefetch buffer connected to L1
     GHB GHB1 = GHB(512); 
+    ControlUnit PrefetchController = ControlUnit(&L1);   
     IT IndexTable = IT(512, params.block_size, &GHB1);
     GHB1.ConnectToIT(&IndexTable);
     L1.Assign(&VL1, &GHB1, &IndexTable, &PF1); 
     PF1.Assign(NULL, &GHB1, &IndexTable, NULL);
+    PF1.SetCU(&PrefetchController);
 
     char str[2];
     
@@ -81,10 +83,10 @@ int main (int argc, char* argv[])
         {   
             //cout << VL1.VirtualMemory[0][15] << endl;
             //cout << addr << endl;
-            /*if (addr == 1073869196)
+            /*if (addr == 2063812048)
             {
                 cout << "hi" << endl;
-            } */ 
+            } */
             L1.Read(DecToBinary(addr)); 
             //printf("%s %lx\n", "read", addr);           // Print and test if file is read correctly
             //cout << L2.Reads << endl;

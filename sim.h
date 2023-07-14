@@ -148,8 +148,9 @@ public:
     {
         Connection = connection;
     }
-    GHBEntry* Insert (string missaddress, int blockbits)
+    GHBEntry* Insert (string missaddress, int blockbits) 
     {    
+        missaddress = missaddress.substr(0, 32 - blockbits);
         GHBEntry* NewEntry = new GHBEntry(missaddress); //this is a pointer the heap keep the memory even after pointer is pushed from ghb
         if (Count != BufferSize)
             Count ++;
@@ -206,10 +207,10 @@ public:
     vector<string> MarkovPredictor(GHBEntry* missreference) 
     {   
         vector<MarkovEntry> MarkovTable;
-        MarkovTable.resize(512); 
+        MarkovTable.resize(BufferSize); //TODO check if works
         GHBEntry* Current = missreference->Duplicate; 
         vector<string> Max; //this is to keep track of the most entries after the miss address
-        Max.resize(16, "0");
+        Max.reserve(16);//can go up to 16 but im using the size to make an iterator so keep the actual vector smaller than 16 unless necessary
         if (Current == nullptr)
         {
             return Max;
@@ -255,14 +256,15 @@ public:
             Current = Current->Duplicate;
         }
         sort(MarkovTable.begin(), MarkovTable.end(), CompareByCounter()); //no idea you could do this and as such it isnt my code chatgpt generated
-        for (int i = 0; i < Max.size(); i++)  //iterate 16 times to get the highest probable next addresses based on markov predictor
-        {
-            Max[i] = MarkovTable[i].Address;
+        for (int i = 0; i < Max.capacity(); i++)  //iterate 16 times to get the highest probable next addresses based on markov predictor
+        { 
+            //cout << MarkovTable[i].Address << endl;    
+            if (MarkovTable[i].Address != "0")
+                Max.push_back(MarkovTable[i].Address);
         };
         return Max;
     };
 };
-
 
 class Cache
 {
@@ -336,6 +338,7 @@ public:
                     temp = '0' + temp;
                 }
                 VirtualMemory[i][j] = VirtualMemory[i][j] + temp;
+                VirtualMemory[i][j] += "0"; //this is the tag bit for the tagged seqeuntial prefetcher
                 //cout << VirtualMemory[i][j] << endl;
             };
         };
@@ -380,7 +383,7 @@ public:
         }
         else
         {   //this is the read miss 
-            *PrefetchDupe = false;
+            *PrefetchDupe = false; //TODO add a call to the control unit to choose the prefetcher
             int LRUWay = LRUChecker(); 
             Misses ++;
             ReadMiss ++;
@@ -391,10 +394,11 @@ public:
             {
                 if (PrefetchBuffer->Read(bincurrentaddress))
                 {
-                    *PrefetchDupe = true;
+                    *PrefetchDupe = true; 
                 }
             };
-            Allocate(LRUWay, ValidDirty, bincurrentaddress, PrefetchDupe); 
+            Allocate(LRUWay, ValidDirty, bincurrentaddress, *PrefetchDupe); 
+            
             LRUCounter();
             bool check = false;
             if (VCPtr != NULL)
@@ -451,7 +455,7 @@ public:
                     *PrefetchDupe = true;
                 }
             };
-            Allocate(LRUWay, ValidDirty, bincurrentaddress, PrefetchDupe); //NOT IMPLEMENTED YET
+            Allocate(LRUWay, ValidDirty, bincurrentaddress, *PrefetchDupe); //NOT IMPLEMENTED YET
             LRUCounter();
             VirtualMemory[*SetOffsetPoint][LRUWay][1] = '1'; //sets valid bit to true
             VirtualMemory[*SetOffsetPoint][LRUWay][0] = '1'; //sets dirty bit to true
@@ -519,7 +523,7 @@ public:
             return false;
         }
     }
-    bool VCCase(string bincurrentaddress, bool prefetchdupe)
+    bool VCCase(string bincurrentaddress)
     {
         bool VCAccess = true;
         int VCHit = false;
@@ -548,12 +552,12 @@ public:
         ValidDirty = VCPtr->DirtyBitChecker(temp); 
         VCPtr->Allocate(temp, ValidDirty, bincurrentaddress);*/
     };
-    virtual void Allocate(int Temp, bool Dbit, string bincurrentaddress, bool prefetchdupe) //having the binary address as a parameter even after its decoded is so it can get redecoded
-    //in the next write request to the next cache
+    virtual void Allocate(int Temp, bool Dbit, string bincurrentaddress, bool &prefetchdupe) //having the binary address as a parameter even after its decoded is so it can get redecoded
+    //in the next write request to the next cache 
     {   
         bool SwapHit = false;
         if (VCPtr != NULL) 
-            SwapHit = VCCase(bincurrentaddress, prefetchdupe); 
+            SwapHit = VCCase(bincurrentaddress); 
             //cout <<SwapHit << endl;
         if (Dbit == true && VCPtr == NULL) //this is the dirty bit     
         {
@@ -561,7 +565,7 @@ public:
             WriteBacks ++;
             //TagMemory[*SetOffsetPoint][Temp] = *TagPoint; //TODO REMOVE IF ERROR;
         }
-        if (LowerLevel != NULL && SwapHit == false)
+        if (LowerLevel != NULL && SwapHit == false  && prefetchdupe == false)
             LowerLevel->Read(bincurrentaddress);
         //cout << TagMemory[*SetOffsetPoint][Temp] << endl;
         TagMemory[*SetOffsetPoint][Temp] = *TagPoint; //TODO POssibly need to update this so the correct tag gets placed //this is wrong during vcptr allocation we are updating the address with current
@@ -686,6 +690,7 @@ public:
 class Victim : public Cache
 {
 public: 
+    bool* PrefetchDupe = Connection->PrefetchDupe;
     Victim(Cache * connection, int blocks, string name, int size, int type, int blocksize, Cache * lowerlevel):Cache(connection, name, size, type, blocksize, lowerlevel)
     {
         Blocks = blocks;
@@ -702,13 +707,13 @@ public:
         bool ValidTag = TagChecker(); //false if no tag matches the address tag, true otherwise
         bool ValidBit = BlockValidityChecker(*TrueWay);
         bool ValidDirty = DirtyBitChecker(*TrueWay);
+        PrefetchDupe = Connection->PrefetchDupe;
         if (ValidBit == true && ValidTag == true)
         {       
-                bool* PrefetchDupe = Connection->PrefetchDupe;
-                Hits ++; //= data; since I'm only doing blocks with no data IM not implementing the data rn
-                Reads ++;
                 if (*PrefetchDupe == false)
-                {
+                {   
+                    Hits ++; //= data; since I'm only doing blocks with no data IM not implementing the data rn
+                    Reads ++;
                     Swap();       
                     *SwapHitCheck = true;
                     LRUCounter();
@@ -778,12 +783,16 @@ public:
     void Reset (vector<string> pushback) override {}; 
 };
 
+
+
 class PrefetchBuffer : public Cache
 {
 public: 
     vector<string> BAMemory; //Buffer address memory
     bool PrefetchMethod = false; //flase is tagges sequential while true is markov predictor 
     int AddressSize;
+    //ControlUnit* CU;
+
     PrefetchBuffer(Cache* connection, string name, int size, int type, int blocksize, Cache * lowerlevel):Cache(connection, name, size, type, blocksize, lowerlevel)
     {
         Initialize();
@@ -792,16 +801,12 @@ public:
     {
         int m = 16; //this is dumb but I dont feel like adding it to the main constructor so edit buffer size here this is in total blocks
         AddressSize = (32 - BlockOffsetBits);
-
-        BAMemory.resize(m); //first layer of virtual memory is set
-        for (int i = 0; i < BAMemory.size(); i++)
-        {
-            while (BAMemory[i].size() != AddressSize)
-            {
-                BAMemory[i] += '0';
-            }
-        };
+        BAMemory.resize(m, "0"); //first layer of virtual memory is set
     }
+    /*void SetCU (ControlUnit* cu)
+    {
+        CU = cu;
+    }; */
     bool Read (string bincurrentaddress) //sees if the current address matches the block in the front of the buffer 
     {   
         GHBEntry* NewEntry = GHBPtr->Insert(bincurrentaddress, BlockOffsetBits);
@@ -810,13 +815,13 @@ public:
         /*for (int i = 0; i < temp.size(); i ++)  
         {
             cout << temp[i] << endl;
-        } 
-        cout << "End" << endl; */ 
+        } */
+        //cout << "End" << endl; 
         PrefetchAllocate(temp); //clears and replaces the data in the buffer for the most recent miss address markov predictor
         for (int i = 0; i < BAMemory.size(); i++)
         {
-            cout << BAMemory[i] << endl;
-            cout << bincurrentaddress << "bincurr" << endl;
+            //cout << BAMemory[i] << endl;
+            //cout << bincurrentaddress << "bincurr" << endl;
             if (BAMemory[i].substr(0, AddressSize) == bincurrentaddress.substr(0, AddressSize))
             {
                 swap(BAMemory[0], BAMemory[i]); //swaps the front of the stream buffer with the correct address after associative search
@@ -824,11 +829,22 @@ public:
                 return true;
             }
         }
-        cout << "End" << endl;
+        //cout << "End" << endl;
         return false;
     };
     void PrefetchAllocate (vector<string> pushback) //sets the BAMemory and checks for duplicates
     {   
+        if (BAMemory[0] == "0")
+        {
+            int Index = 1; 
+            while (BAMemory[Index] != "0")
+            {
+                if (Index == 16)
+                    break;
+                Index ++;
+            }
+            swap(BAMemory[0], BAMemory[Index]); 
+        }
         int Index1 = 0;
         for (string& element1 : pushback)
         {
@@ -841,10 +857,37 @@ public:
             }
         Index1 ++;
         }
-        vector<string>::iterator EraseIterator = BAMemory.end() - pushback.size(); //can create iterator that goes to index before pushback
-        BAMemory.erase(EraseIterator, BAMemory.end());  
-        BAMemory.insert(BAMemory.begin(), pushback.begin(), pushback.end());
+        //cout << pushback.size() << endl;
+        int temp = pushback.size();
+        pushback.erase(std::remove(pushback.begin(), pushback.end(), "0"), pushback.end());
+        /*for (int i = 0; i < pushback.size(); i++)
+        {   
+            cout << pushback[i] << endl;
+        }; */
 
+        //cout << pushback.size() << " pushback size" << endl; 
+        vector<string>::iterator EraseIterator = BAMemory.end(); //can create iterator that goes to index before pushback
+        advance(EraseIterator, -(pushback.size())); 
+        /*for (int i = 0; i < BAMemory.size(); i++)
+        {   
+            cout << BAMemory[i] << endl;
+        };*/ 
+        //cout << pushback.size() << " pushback size" << endl;
+        BAMemory.erase(EraseIterator, BAMemory.end());  
+        /*for (int i = 0; i < BAMemory.size(); i++)
+        {   
+            cout << BAMemory[i] << endl;
+        };
+        cout << "After Erase" << endl; */
+        BAMemory.insert(BAMemory.begin(), pushback.begin(), pushback.end());
+        /*for (int i = 0; i < BAMemory.size(); i++)
+        {
+            cout << BAMemory[i] << endl;
+            if (BAMemory[i] == "0")
+                cout << "False Entry" << endl;
+        }; 
+        cout << "After Insert" << endl; */
+        //cout << "END" << endl;
         /*for (int i = 0; i < BAMemory.size(); i++)
         {
             cout << BAMemory[i] << endl; 
